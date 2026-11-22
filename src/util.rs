@@ -99,6 +99,54 @@ pub fn open_terminal(dir: &Path) {
     }
 }
 
+/// Folders no project walk ever enters: a project opened on the home folder would
+/// otherwise crawl hundreds of thousands of application files.
+pub const SKIP_ALWAYS: &[&str] = &["AppData"];
+
+/// A folder that is a reparse point but not a link: the root of a cloud-synced folder
+/// (OneDrive, Dropbox…), whose files are mostly online-only. Links never pass `is_dir()`.
+#[cfg(windows)]
+fn is_reparse_dir(meta: &std::fs::Metadata) -> bool {
+    use std::os::windows::fs::MetadataExt;
+    meta.is_dir() && meta.file_attributes() & 0x400 != 0 // FILE_ATTRIBUTE_REPARSE_POINT
+}
+
+#[cfg(not(windows))]
+fn is_reparse_dir(_: &std::fs::Metadata) -> bool {
+    false
+}
+
+/// Folder-walk filter for `root`: skips cloud-synced folders, unless the project itself
+/// lives in one. Walking OneDrive from the home folder reached 10k online-only files.
+pub struct CloudGuard {
+    inside: bool,
+}
+
+impl CloudGuard {
+    pub fn new(root: &Path) -> Self {
+        let inside = root.ancestors().any(|a| std::fs::symlink_metadata(a).is_ok_and(|m| is_reparse_dir(&m)));
+        Self { inside }
+    }
+
+    /// Whether a walk should skip this sub-folder.
+    pub fn skip(&self, e: &std::fs::DirEntry) -> bool {
+        !self.inside && e.metadata().is_ok_and(|m| is_reparse_dir(&m))
+    }
+}
+
+/// An online-only cloud file: reading it makes the sync client download it first.
+#[cfg(windows)]
+pub fn is_online_only(meta: &std::fs::Metadata) -> bool {
+    use std::os::windows::fs::MetadataExt;
+    // OFFLINE | RECALL_ON_OPEN | RECALL_ON_DATA_ACCESS
+    meta.file_attributes() & (0x1000 | 0x4_0000 | 0x40_0000) != 0
+}
+
+#[cfg(not(windows))]
+pub fn is_online_only(_: &std::fs::Metadata) -> bool {
+    false
+}
+
 /// Path relative to `root`, with forward slashes.
 pub fn rel_path(root: &Path, p: &Path) -> String {
     p.strip_prefix(root)

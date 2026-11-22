@@ -22,8 +22,7 @@ impl FileIndex {
         let ready = Arc::new(Mutex::new(false));
         let (f2, r2) = (files.clone(), ready.clone());
         std::thread::spawn(move || {
-            let mut out = vec![];
-            walk(&root, &root, &mut out);
+            let mut out = list_files(&root);
             out.sort();
             *f2.lock().unwrap() = out;
             *r2.lock().unwrap() = true;
@@ -33,7 +32,14 @@ impl FileIndex {
     }
 }
 
-fn walk(root: &Path, dir: &Path, out: &mut Vec<String>) {
+/// Every file of the project, relative to `root`.
+fn list_files(root: &Path) -> Vec<String> {
+    let mut out = vec![];
+    walk(root, root, &crate::util::CloudGuard::new(root), &mut out);
+    out
+}
+
+fn walk(root: &Path, dir: &Path, cloud: &crate::util::CloudGuard, out: &mut Vec<String>) {
     if out.len() > 150_000 {
         return;
     }
@@ -42,10 +48,10 @@ fn walk(root: &Path, dir: &Path, out: &mut Vec<String>) {
         let name = e.file_name().to_string_lossy().into_owned();
         let Ok(ft) = e.file_type() else { continue };
         if ft.is_dir() {
-            if SKIP_DIRS.contains(&name.as_str()) {
+            if SKIP_DIRS.contains(&name.as_str()) || crate::util::SKIP_ALWAYS.contains(&name.as_str()) || cloud.skip(&e) {
                 continue;
             }
-            walk(root, &e.path(), out);
+            walk(root, &e.path(), cloud, out);
         } else if ft.is_file() {
             out.push(crate::util::rel_path(root, &e.path()));
         }
@@ -295,8 +301,7 @@ impl FindInFiles {
         let generation = self.generation.clone();
         std::thread::spawn(move || {
             let alive = || generation.load(Ordering::SeqCst) == my_gen;
-            let mut files = vec![];
-            walk(&root, &root, &mut files);
+            let mut files = list_files(&root);
             files.sort();
             let mut total = 0usize;
             let mut batch: Vec<Hit> = vec![];
@@ -310,7 +315,8 @@ impl FindInFiles {
                 scanned += 1;
                 let p = root.join(f);
                 let Ok(meta) = std::fs::metadata(&p) else { continue };
-                if meta.len() > 3_000_000 {
+                // reading an online-only file would download it from the cloud
+                if meta.len() > 3_000_000 || crate::util::is_online_only(&meta) {
                     continue;
                 }
                 let Ok(bytes) = std::fs::read(&p) else { continue };
@@ -426,6 +432,20 @@ impl FindInFiles {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    #[ignore = "walks this machine's home folder; run with --ignored"]
+    fn home_folder_walk_skips_app_data_and_cloud() {
+        // VS_TEST_CWD picks the project folder (default: the home folder)
+        let root = PathBuf::from(std::env::var("VS_TEST_CWD").or_else(|_| std::env::var("USERPROFILE")).unwrap());
+        let t = std::time::Instant::now();
+        let files = list_files(&root);
+        eprintln!("files: {} in {:?}", files.len(), t.elapsed());
+        assert!(!files.iter().any(|f| f.starts_with("AppData/") || f.starts_with("OneDrive/")));
+        let t = std::time::Instant::now();
+        let repos = crate::git::nested_repos(&root);
+        eprintln!("nested repos: {repos:?} in {:?}", t.elapsed());
+    }
 
     #[test]
     fn regex_options() {

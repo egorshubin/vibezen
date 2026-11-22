@@ -253,15 +253,17 @@ fn parse_status(s: &str) -> StatusData {
 const SKIP_DIRS: &[&str] = &["node_modules", "vendor", "target", "dist", "build", "bower_components", "__pycache__", "venv"];
 
 /// Nested git repositories (folders with their own `.git`), relative to `root`, a few levels deep.
-fn nested_repos(root: &Path) -> Vec<String> {
-    fn walk(dir: &Path, rel: &str, depth: usize, out: &mut Vec<String>) {
+/// The walk is remembered for a minute: status refreshes come after every agent edit and every
+/// return to the window, and on a big folder (a home directory) it takes seconds of disk work.
+pub(crate) fn nested_repos(root: &Path) -> Vec<String> {
+    fn walk(dir: &Path, rel: &str, depth: usize, cloud: &crate::util::CloudGuard, out: &mut Vec<String>) {
         let Ok(rd) = std::fs::read_dir(dir) else { return };
         for e in rd.flatten() {
             if !e.file_type().is_ok_and(|t| t.is_dir()) {
                 continue; // also skips symlinks / junctions
             }
             let name = e.file_name().to_string_lossy().into_owned();
-            if name.starts_with('.') || SKIP_DIRS.contains(&name.as_str()) {
+            if name.starts_with('.') || SKIP_DIRS.contains(&name.as_str()) || crate::util::SKIP_ALWAYS.contains(&name.as_str()) || cloud.skip(&e) {
                 continue;
             }
             let r = if rel.is_empty() { name } else { format!("{rel}/{name}") };
@@ -270,13 +272,20 @@ fn nested_repos(root: &Path) -> Vec<String> {
                 out.push(r.clone());
             }
             if depth > 1 {
-                walk(&p, &r, depth - 1, out);
+                walk(&p, &r, depth - 1, cloud, out);
             }
         }
     }
+    static CACHE: std::sync::Mutex<Option<HashMap<PathBuf, (std::time::Instant, Vec<String>)>>> = std::sync::Mutex::new(None);
+    if let Some((at, v)) = CACHE.lock().unwrap_or_else(|e| e.into_inner()).get_or_insert_with(HashMap::new).get(root) {
+        if at.elapsed().as_secs() < 60 {
+            return v.clone();
+        }
+    }
     let mut out = vec![];
-    walk(root, "", 4, &mut out);
+    walk(root, "", 4, &crate::util::CloudGuard::new(root), &mut out);
     out.sort();
+    CACHE.lock().unwrap_or_else(|e| e.into_inner()).get_or_insert_with(HashMap::new).insert(root.to_owned(), (std::time::Instant::now(), out.clone()));
     out
 }
 
@@ -309,14 +318,21 @@ fn collect_status(root: &Path) -> StatusData {
             (d, out)
         })
     };
+    // nested repositories a few at a time: dozens of `git status` at once swamp the disk
     let ((mut d, root_out), subs) = std::thread::scope(|sc| {
-        let jobs: Vec<_> = nested
-            .iter()
-            .map(|dir| sc.spawn(move || status(&root.join(dir)).map(|(d, out)| (dir.clone(), d, out))))
-            .collect();
+        let rest = sc.spawn(|| {
+            let mut subs: Vec<(String, StatusData, Vec<Commit>)> = vec![];
+            for chunk in nested.chunks(3) {
+                let jobs: Vec<_> = chunk
+                    .iter()
+                    .map(|dir| sc.spawn(move || status(&root.join(dir)).map(|(d, out)| (dir.clone(), d, out))))
+                    .collect();
+                subs.extend(jobs.into_iter().filter_map(|j| j.join().ok().flatten()));
+            }
+            subs
+        });
         let d = status(root).unwrap_or_default();
-        let subs: Vec<(String, StatusData, Vec<Commit>)> = jobs.into_iter().filter_map(|j| j.join().ok().flatten()).collect();
-        (d, subs)
+        (d, rest.join().unwrap_or_default())
     });
     if d.is_repo {
         d.repos.push(Repo { dir: String::new(), branch: d.branch.clone(), upstream: d.upstream.clone(), outgoing: root_out });
