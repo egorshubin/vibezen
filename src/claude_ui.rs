@@ -625,260 +625,280 @@ pub fn show(
         .frame(Frame::NONE.inner_margin(Margin::symmetric(10, 6)))
         .show(ui, |ui| {
             let Chat { items, md_cache, live_text, busy, .. } = chat;
-            egui::ScrollArea::vertical()
+            let to_end_id = Id::new(("claude_to_end", uid));
+            let mut area = egui::ScrollArea::vertical()
                 .id_salt(("claude_msgs", uid))
                 .stick_to_bottom(true)
-                .auto_shrink([false, false])
-                .show(ui, |ui| {
-                    ui.set_width(ui.available_width());
-                    if items.is_empty() && !*busy {
-                        ui.add_space(40.0);
-                        ui.vertical_centered(|ui| {
-                            ui.label(RichText::new("✻").size(36.0).color(CLAUDE));
+                .auto_shrink([false, false]);
+            // "↓" clicked last frame: jump to the end; reaching it re-enables stick_to_bottom
+            if let Some(end) = ui.data_mut(|d| d.remove_temp::<f32>(to_end_id)) {
+                area = area.vertical_scroll_offset(end);
+            }
+            let scroll = area.show(ui, |ui| {
+                ui.set_width(ui.available_width());
+                if items.is_empty() && !*busy {
+                    ui.add_space(40.0);
+                    ui.vertical_centered(|ui| {
+                        ui.label(RichText::new("✻").size(36.0).color(CLAUDE));
+                        ui.add_space(4.0);
+                        ui.label(RichText::new("What should we build?").size(16.0).strong());
+                        ui.add_space(2.0);
+                        ui.label(RichText::new(cwd.display().to_string()).small().color(pal.text_weak));
+                        ui.add_space(10.0);
+                        ui.label(
+                            RichText::new(
+                                "Each project has its own Claude agent running in parallel.\nYou get a notification when a task is done or needs you.\n🕘 opens past conversations.",
+                            )
+                            .small()
+                            .color(pal.text_weak),
+                        );
+                    });
+                }
+                for (idx, item) in items.iter_mut().enumerate() {
+                    match item {
+                        Item::User { text, thumbs, files } => {
+                            ui.add_space(8.0);
+                            Frame::NONE
+                                .fill(pal.user_bubble)
+                                .stroke(Stroke::new(1.0, pal.border))
+                                .corner_radius(8)
+                                .inner_margin(Margin::symmetric(10, 8))
+                                .show(ui, |ui| {
+                                    ui.set_width(ui.available_width());
+                                    if !thumbs.is_empty() {
+                                        ui.horizontal_wrapped(|ui| {
+                                            for t in thumbs.iter() {
+                                                ui.add(egui::Image::from_texture((t.id(), vec2(72.0, 72.0))).corner_radius(4));
+                                            }
+                                        });
+                                    }
+                                    if !files.is_empty() {
+                                        ui.horizontal_wrapped(|ui| {
+                                            for f in files.iter() {
+                                                file_chip(ui, pal, f, false);
+                                            }
+                                        });
+                                    }
+                                    if !text.is_empty() {
+                                        ui.add(egui::Label::new(RichText::new(text.as_str())).wrap().selectable(true));
+                                    }
+                                });
+                            ui.add_space(6.0);
+                        }
+                        Item::Assistant(text) => {
+                            ui.horizontal_top(|ui| {
+                                ui.label(RichText::new("●").size(10.0).color(pal.text));
+                                ui.vertical(|ui| {
+                                    markdown(ui, md_cache, text);
+                                });
+                            });
                             ui.add_space(4.0);
-                            ui.label(RichText::new("What should we build?").size(16.0).strong());
-                            ui.add_space(2.0);
-                            ui.label(RichText::new(cwd.display().to_string()).small().color(pal.text_weak));
-                            ui.add_space(10.0);
-                            ui.label(
-                                RichText::new(
-                                    "Each project has its own Claude agent running in parallel.\nYou get a notification when a task is done or needs you.\n🕘 opens past conversations.",
-                                )
-                                .small()
-                                .color(pal.text_weak),
-                            );
-                        });
-                    }
-                    for (idx, item) in items.iter_mut().enumerate() {
-                        match item {
-                            Item::User { text, thumbs, files } => {
-                                ui.add_space(8.0);
-                                Frame::NONE
-                                    .fill(pal.user_bubble)
-                                    .stroke(Stroke::new(1.0, pal.border))
-                                    .corner_radius(8)
-                                    .inner_margin(Margin::symmetric(10, 8))
-                                    .show(ui, |ui| {
-                                        ui.set_width(ui.available_width());
-                                        if !thumbs.is_empty() {
-                                            ui.horizontal_wrapped(|ui| {
-                                                for t in thumbs.iter() {
-                                                    ui.add(egui::Image::from_texture((t.id(), vec2(72.0, 72.0))).corner_radius(4));
-                                                }
-                                            });
-                                        }
-                                        if !files.is_empty() {
-                                            ui.horizontal_wrapped(|ui| {
-                                                for f in files.iter() {
-                                                    file_chip(ui, pal, f, false);
-                                                }
-                                            });
-                                        }
-                                        if !text.is_empty() {
-                                            ui.add(egui::Label::new(RichText::new(text.as_str())).wrap().selectable(true));
-                                        }
-                                    });
-                                ui.add_space(6.0);
+                        }
+                        Item::Thinking(text) => {
+                            egui::CollapsingHeader::new(RichText::new("✻ Thinking").small().italics().color(pal.text_weak))
+                                .id_salt(("think", idx))
+                                .show(ui, |ui| {
+                                    ui.add(egui::Label::new(RichText::new(text.as_str()).small().italics().color(pal.text_weak)).wrap());
+                                });
+                        }
+                        Item::Tool { name, input, result, sub, .. } => {
+                            let col = match result {
+                                None => CLAUDE.gamma_multiply(0.55 + 0.45 * ((now * 4.0).sin() as f32 * 0.5 + 0.5)),
+                                Some((_, true)) => pal.error,
+                                Some((_, false)) => pal.success,
+                            };
+                            let summary = claude::tool_summary(name, input, &cwd);
+                            let open_id = Id::new(("tool_open", uid, idx));
+                            // edits start expanded (inline diff), like in VS Code
+                            let default_open = matches!(name.as_str(), "Edit" | "MultiEdit" | "Write");
+                            let mut open = ui.data(|d| d.get_temp::<bool>(open_id)).unwrap_or(default_open);
+                            let indent = if *sub { 18.0 } else { 0.0 };
+                            let (rect, resp) = ui.allocate_exact_size(vec2(ui.available_width(), 22.0), Sense::click());
+                            let p = ui.painter().with_clip_rect(rect.intersect(ui.clip_rect()));
+                            if resp.hovered() {
+                                p.rect_filled(rect, 4.0, pal.hover);
                             }
-                            Item::Assistant(text) => {
-                                ui.horizontal_top(|ui| {
-                                    ui.label(RichText::new("●").size(10.0).color(pal.text));
-                                    ui.vertical(|ui| {
-                                        markdown(ui, md_cache, text);
-                                    });
+                            let x = rect.min.x + 4.0 + indent;
+                            p.circle_filled(pos2(x + 4.0, rect.center().y), 3.5, col);
+                            // the name is centred; the command sits on its baseline (centring
+                            // each font's own box would lift the monospace one)
+                            let ppp = ui.ctx().pixels_per_point();
+                            let snap = |v: f32| (v * ppp).round() / ppp;
+                            let ng = p.layout_no_wrap(name.clone(), FontId::proportional(13.0), pal.text);
+                            let sg = p.layout_no_wrap(summary.clone(), FontId::monospace(11.5), pal.text_weak);
+                            let (nw, name_top) = (ng.size().x, snap(rect.center().y - ng.size().y / 2.0));
+                            let base = name_top + first_baseline(&ng);
+                            p.galley(pos2(x + 14.0, name_top), ng, pal.text);
+                            p.galley(pos2(x + 22.0 + nw, snap(base - first_baseline(&sg))), sg, pal.text_weak);
+                            let file = claude::tool_file_path(name, input);
+                            let hover = if file.is_some() { "Click: details · double-click: open file" } else { "Click: details" };
+                            let resp = resp.on_hover_text(hover);
+                            if resp.clicked() {
+                                open = !open;
+                                ui.data_mut(|d| d.insert_temp(open_id, open));
+                            }
+                            if resp.double_clicked() {
+                                if let Some(f) = file {
+                                    acts.push(Act::Open(f));
+                                }
+                            }
+                            if open {
+                                ui.horizontal(|ui| {
+                                    ui.add_space(14.0 + indent);
+                                    ui.vertical(|ui| tool_body(ui, pal, name, input, result, &cwd));
                                 });
                                 ui.add_space(4.0);
                             }
-                            Item::Thinking(text) => {
-                                egui::CollapsingHeader::new(RichText::new("✻ Thinking").small().italics().color(pal.text_weak))
-                                    .id_salt(("think", idx))
-                                    .show(ui, |ui| {
-                                        ui.add(egui::Label::new(RichText::new(text.as_str()).small().italics().color(pal.text_weak)).wrap());
-                                    });
-                            }
-                            Item::Tool { name, input, result, sub, .. } => {
-                                let col = match result {
-                                    None => CLAUDE.gamma_multiply(0.55 + 0.45 * ((now * 4.0).sin() as f32 * 0.5 + 0.5)),
-                                    Some((_, true)) => pal.error,
-                                    Some((_, false)) => pal.success,
-                                };
-                                let summary = claude::tool_summary(name, input, &cwd);
-                                let open_id = Id::new(("tool_open", uid, idx));
-                                // edits start expanded (inline diff), like in VS Code
-                                let default_open = matches!(name.as_str(), "Edit" | "MultiEdit" | "Write");
-                                let mut open = ui.data(|d| d.get_temp::<bool>(open_id)).unwrap_or(default_open);
-                                let indent = if *sub { 18.0 } else { 0.0 };
-                                let (rect, resp) = ui.allocate_exact_size(vec2(ui.available_width(), 22.0), Sense::click());
-                                let p = ui.painter().with_clip_rect(rect.intersect(ui.clip_rect()));
-                                if resp.hovered() {
-                                    p.rect_filled(rect, 4.0, pal.hover);
-                                }
-                                let x = rect.min.x + 4.0 + indent;
-                                p.circle_filled(pos2(x + 4.0, rect.center().y), 3.5, col);
-                                // the name is centred; the command sits on its baseline (centring
-                                // each font's own box would lift the monospace one)
-                                let ppp = ui.ctx().pixels_per_point();
-                                let snap = |v: f32| (v * ppp).round() / ppp;
-                                let ng = p.layout_no_wrap(name.clone(), FontId::proportional(13.0), pal.text);
-                                let sg = p.layout_no_wrap(summary.clone(), FontId::monospace(11.5), pal.text_weak);
-                                let (nw, name_top) = (ng.size().x, snap(rect.center().y - ng.size().y / 2.0));
-                                let base = name_top + first_baseline(&ng);
-                                p.galley(pos2(x + 14.0, name_top), ng, pal.text);
-                                p.galley(pos2(x + 22.0 + nw, snap(base - first_baseline(&sg))), sg, pal.text_weak);
-                                let file = claude::tool_file_path(name, input);
-                                let hover = if file.is_some() { "Click: details · double-click: open file" } else { "Click: details" };
-                                let resp = resp.on_hover_text(hover);
-                                if resp.clicked() {
-                                    open = !open;
-                                    ui.data_mut(|d| d.insert_temp(open_id, open));
-                                }
-                                if resp.double_clicked() {
-                                    if let Some(f) = file {
-                                        acts.push(Act::Open(f));
-                                    }
-                                }
-                                if open {
-                                    ui.horizontal(|ui| {
-                                        ui.add_space(14.0 + indent);
-                                        ui.vertical(|ui| tool_body(ui, pal, name, input, result, &cwd));
-                                    });
+                        }
+                        Item::Permission { tool, input, state, .. } => {
+                            let pending = *state == PermState::Pending;
+                            ui.add_space(4.0);
+                            Frame::NONE
+                                .fill(pal.card)
+                                .stroke(Stroke::new(1.0, if pending { CLAUDE } else { pal.border }))
+                                .corner_radius(8)
+                                .inner_margin(Margin::same(10))
+                                .show(ui, |ui| {
+                                    ui.set_width(ui.available_width());
+                                    let plan = tool == "ExitPlanMode";
+                                    let title = if plan {
+                                        "Here is Claude's plan. Ready to code?".to_owned()
+                                    } else {
+                                        match tool.as_str() {
+                                            "Edit" | "MultiEdit" | "Write" => format!("Make this edit to {}?", claude::tool_summary(tool, input, &cwd)),
+                                            "Bash" | "PowerShell" => "Run this command?".to_owned(),
+                                            _ => format!("Allow {tool}?"),
+                                        }
+                                    };
+                                    ui.label(RichText::new(title).strong());
                                     ui.add_space(4.0);
-                                }
-                            }
-                            Item::Permission { tool, input, state, .. } => {
-                                let pending = *state == PermState::Pending;
-                                ui.add_space(4.0);
-                                Frame::NONE
-                                    .fill(pal.card)
-                                    .stroke(Stroke::new(1.0, if pending { CLAUDE } else { pal.border }))
-                                    .corner_radius(8)
-                                    .inner_margin(Margin::same(10))
-                                    .show(ui, |ui| {
-                                        ui.set_width(ui.available_width());
-                                        let plan = tool == "ExitPlanMode";
-                                        let title = if plan {
-                                            "Here is Claude's plan. Ready to code?".to_owned()
-                                        } else {
-                                            match tool.as_str() {
-                                                "Edit" | "MultiEdit" | "Write" => format!("Make this edit to {}?", claude::tool_summary(tool, input, &cwd)),
-                                                "Bash" | "PowerShell" => "Run this command?".to_owned(),
-                                                _ => format!("Allow {tool}?"),
+                                    if plan {
+                                        markdown(ui, md_cache, input["plan"].as_str().unwrap_or(""));
+                                    } else {
+                                        tool_body(ui, pal, tool, input, &None, &cwd);
+                                    }
+                                    ui.add_space(4.0);
+                                    match state {
+                                        PermState::Pending => {
+                                            let opts: Vec<(&str, Act)> = if plan {
+                                                vec![
+                                                    ("Yes, and auto-accept edits", Act::Allow(idx, false, Some("acceptEdits"))),
+                                                    ("Yes, and manually approve edits", Act::Allow(idx, false, Some("manual"))),
+                                                    ("No, keep planning", Act::Deny(idx)),
+                                                ]
+                                            } else {
+                                                vec![
+                                                    ("Yes", Act::Allow(idx, false, None)),
+                                                    ("Yes, and don't ask again this session", Act::Allow(idx, true, None)),
+                                                    ("No, tell Claude what to do differently", Act::Deny(idx)),
+                                                ]
+                                            };
+                                            for (n, (label, act)) in opts.into_iter().enumerate() {
+                                                let txt = RichText::new(format!("{}  {label}", n + 1));
+                                                let b = egui::Button::new(if n == 0 { txt.color(Color32::WHITE) } else { txt })
+                                                    .fill(if n == 0 { CLAUDE } else { pal.button_bg })
+                                                    .min_size(vec2(ui.available_width(), 26.0))
+                                                    .corner_radius(6);
+                                                if ui.add(b).clicked() {
+                                                    acts.push(act);
+                                                }
                                             }
-                                        };
-                                        ui.label(RichText::new(title).strong());
-                                        ui.add_space(4.0);
-                                        if plan {
-                                            markdown(ui, md_cache, input["plan"].as_str().unwrap_or(""));
-                                        } else {
-                                            tool_body(ui, pal, tool, input, &None, &cwd);
                                         }
-                                        ui.add_space(4.0);
-                                        match state {
-                                            PermState::Pending => {
-                                                let opts: Vec<(&str, Act)> = if plan {
-                                                    vec![
-                                                        ("Yes, and auto-accept edits", Act::Allow(idx, false, Some("acceptEdits"))),
-                                                        ("Yes, and manually approve edits", Act::Allow(idx, false, Some("manual"))),
-                                                        ("No, keep planning", Act::Deny(idx)),
-                                                    ]
-                                                } else {
-                                                    vec![
-                                                        ("Yes", Act::Allow(idx, false, None)),
-                                                        ("Yes, and don't ask again this session", Act::Allow(idx, true, None)),
-                                                        ("No, tell Claude what to do differently", Act::Deny(idx)),
-                                                    ]
-                                                };
-                                                for (n, (label, act)) in opts.into_iter().enumerate() {
-                                                    let txt = RichText::new(format!("{}  {label}", n + 1));
-                                                    let b = egui::Button::new(if n == 0 { txt.color(Color32::WHITE) } else { txt })
-                                                        .fill(if n == 0 { CLAUDE } else { pal.button_bg })
-                                                        .min_size(vec2(ui.available_width(), 26.0))
-                                                        .corner_radius(6);
-                                                    if ui.add(b).clicked() {
-                                                        acts.push(act);
+                                        PermState::Allowed => {
+                                            ui.label(RichText::new("✔ Allowed").small().color(pal.success));
+                                        }
+                                        PermState::Denied => {
+                                            ui.label(RichText::new("✖ Denied").small().color(pal.error));
+                                        }
+                                    }
+                                });
+                            ui.add_space(4.0);
+                        }
+                        Item::Question { input, answers, state, .. } => {
+                            let pending = *state == PermState::Pending;
+                            Frame::NONE
+                                .fill(pal.card)
+                                .stroke(Stroke::new(1.0, if pending { CLAUDE } else { pal.border }))
+                                .corner_radius(8)
+                                .inner_margin(Margin::same(10))
+                                .show(ui, |ui| {
+                                    ui.set_width(ui.available_width());
+                                    if let Some(qs) = input["questions"].as_array() {
+                                        for q in qs {
+                                            let qt = q["question"].as_str().unwrap_or("").to_owned();
+                                            let multi = q["multiSelect"].as_bool().unwrap_or(false);
+                                            ui.add(egui::Label::new(RichText::new(&qt).strong()).wrap());
+                                            if let Some(opts) = q["options"].as_array() {
+                                                for o in opts {
+                                                    let label = o["label"].as_str().unwrap_or("").to_owned();
+                                                    let chosen = answers.get(&qt).map(|a| a.split(", ").any(|x| x == label)).unwrap_or(false);
+                                                    let desc = o["description"].as_str().unwrap_or("");
+                                                    let r = ui.add_enabled(
+                                                        pending,
+                                                        egui::Button::selectable(chosen, format!("{}  {label}", if chosen { "●" } else { "○" }))
+                                                            .min_size(vec2(ui.available_width(), 24.0)),
+                                                    );
+                                                    if r.on_hover_text(desc).clicked() {
+                                                        acts.push(Act::Pick(idx, qt.clone(), label.clone(), multi));
                                                     }
                                                 }
                                             }
-                                            PermState::Allowed => {
-                                                ui.label(RichText::new("✔ Allowed").small().color(pal.success));
-                                            }
-                                            PermState::Denied => {
-                                                ui.label(RichText::new("✖ Denied").small().color(pal.error));
-                                            }
+                                            ui.add_space(4.0);
                                         }
-                                    });
-                                ui.add_space(4.0);
-                            }
-                            Item::Question { input, answers, state, .. } => {
-                                let pending = *state == PermState::Pending;
-                                Frame::NONE
-                                    .fill(pal.card)
-                                    .stroke(Stroke::new(1.0, if pending { CLAUDE } else { pal.border }))
-                                    .corner_radius(8)
-                                    .inner_margin(Margin::same(10))
-                                    .show(ui, |ui| {
-                                        ui.set_width(ui.available_width());
-                                        if let Some(qs) = input["questions"].as_array() {
-                                            for q in qs {
-                                                let qt = q["question"].as_str().unwrap_or("").to_owned();
-                                                let multi = q["multiSelect"].as_bool().unwrap_or(false);
-                                                ui.add(egui::Label::new(RichText::new(&qt).strong()).wrap());
-                                                if let Some(opts) = q["options"].as_array() {
-                                                    for o in opts {
-                                                        let label = o["label"].as_str().unwrap_or("").to_owned();
-                                                        let chosen = answers.get(&qt).map(|a| a.split(", ").any(|x| x == label)).unwrap_or(false);
-                                                        let desc = o["description"].as_str().unwrap_or("");
-                                                        let r = ui.add_enabled(
-                                                            pending,
-                                                            egui::Button::selectable(chosen, format!("{}  {label}", if chosen { "●" } else { "○" }))
-                                                                .min_size(vec2(ui.available_width(), 24.0)),
-                                                        );
-                                                        if r.on_hover_text(desc).clicked() {
-                                                            acts.push(Act::Pick(idx, qt.clone(), label.clone(), multi));
-                                                        }
-                                                    }
-                                                }
-                                                ui.add_space(4.0);
+                                    }
+                                    if pending {
+                                        ui.horizontal(|ui| {
+                                            if ui.add(egui::Button::new(RichText::new("Submit").color(Color32::WHITE)).fill(CLAUDE)).clicked() {
+                                                acts.push(Act::Submit(idx, true));
                                             }
-                                        }
-                                        if pending {
-                                            ui.horizontal(|ui| {
-                                                if ui.add(egui::Button::new(RichText::new("Submit").color(Color32::WHITE)).fill(CLAUDE)).clicked() {
-                                                    acts.push(Act::Submit(idx, true));
-                                                }
-                                                if ui.button("Skip").clicked() {
-                                                    acts.push(Act::Submit(idx, false));
-                                                }
-                                            });
-                                        }
-                                    });
+                                            if ui.button("Skip").clicked() {
+                                                acts.push(Act::Submit(idx, false));
+                                            }
+                                        });
+                                    }
+                                });
+                        }
+                        Item::Result { text, is_error } => {
+                            if *is_error {
+                                ui.add(egui::Label::new(RichText::new(format!("✖ {text}")).small().color(pal.error)).wrap());
+                            } else {
+                                ui.label(RichText::new(format!("✔ {text}")).small().color(pal.text_weak));
                             }
-                            Item::Result { text, is_error } => {
-                                if *is_error {
-                                    ui.add(egui::Label::new(RichText::new(format!("✖ {text}")).small().color(pal.error)).wrap());
-                                } else {
-                                    ui.label(RichText::new(format!("✔ {text}")).small().color(pal.text_weak));
-                                }
-                                ui.add_space(6.0);
-                            }
-                            Item::System(t) => {
-                                ui.label(RichText::new(t.as_str()).small().italics().color(pal.text_weak));
-                            }
-                            Item::Error(t) => {
-                                ui.add(egui::Label::new(RichText::new(t.as_str()).small().color(pal.error)).wrap());
-                            }
+                            ui.add_space(6.0);
+                        }
+                        Item::System(t) => {
+                            ui.label(RichText::new(t.as_str()).small().italics().color(pal.text_weak));
+                        }
+                        Item::Error(t) => {
+                            ui.add(egui::Label::new(RichText::new(t.as_str()).small().color(pal.error)).wrap());
                         }
                     }
-                    if *busy && !live_text.is_empty() {
-                        ui.horizontal_top(|ui| {
-                            ui.label(RichText::new("●").size(10.0).color(pal.text));
-                            ui.vertical(|ui| {
-                                markdown(ui, md_cache, live_text);
-                            });
+                }
+                if *busy && !live_text.is_empty() {
+                    ui.horizontal_top(|ui| {
+                        ui.label(RichText::new("●").size(10.0).color(pal.text));
+                        ui.vertical(|ui| {
+                            markdown(ui, md_cache, live_text);
                         });
-                    }
-                    ui.add_space(8.0);
-                });
+                    });
+                }
+                ui.add_space(8.0);
+            });
+
+            // scrolled up → round "↓" button bottom-right; a click jumps to the end and the
+            // view sticks to the bottom again
+            let max = scroll.content_size.y - scroll.inner_rect.height();
+            if max - scroll.state.offset().y > 120.0 {
+                let r = egui::Rect::from_center_size(scroll.inner_rect.right_bottom() - vec2(34.0, 22.0), vec2(30.0, 30.0));
+                let resp = ui.interact(r, to_end_id, Sense::click()).on_hover_text("Scroll to the end");
+                let p = ui.painter();
+                p.circle(r.center(), 15.0, if resp.hovered() { pal.hover } else { pal.card }, Stroke::new(1.0, pal.border));
+                crate::theme::paint_glyph(p, r.center(), "↓", egui::FontId::proportional(15.0), pal.text);
+                if resp.clicked() {
+                    ui.data_mut(|d| d.insert_temp(to_end_id, max));
+                    ui.ctx().request_repaint();
+                }
+            }
         });
 
     for a in acts {
@@ -944,6 +964,77 @@ mod tests {
         assert_eq!(names("add"), ["add-dir", "plug:add"]);
         assert_eq!(names("REV"), ["security-review"]);
         assert_eq!(names("").len(), 4);
+    }
+
+    /// Scrolled up in a long conversation, the "↓" button appears; a click brings back the end.
+    #[test]
+    fn scroll_to_end_button() {
+        let ctx = egui::Context::default();
+        crate::app::setup_fonts(&ctx);
+        crate::theme::apply(&ctx, true, 14.0);
+        let pal = crate::theme::palette(true);
+        let mut chat = Chat::new(std::env::temp_dir(), ctx.clone(), "default".into(), "manual".into(), None);
+        chat.items = (0..80).map(|n| Item::Assistant(format!("reply {n}"))).collect();
+        let screen = egui::Rect::from_min_size(egui::Pos2::ZERO, vec2(600.0, 700.0));
+        let mut input = egui::RawInput::default();
+        input.screen_rect = Some(screen);
+        let mut time = 0.0;
+        // (text, centre) of every text shape on screen
+        let mut frame = |chat: &mut Chat, events: Vec<egui::Event>| {
+            let mut i = input.clone();
+            i.events = events;
+            time += 0.5;
+            i.time = Some(time);
+            let out = ctx.run_ui(i, |ui| {
+                show(ui, chat, &pal, None, None);
+            });
+            out.shapes
+                .iter()
+                .filter_map(|cs| match &cs.shape {
+                    egui::Shape::Text(t) if cs.clip_rect.intersects(t.visual_bounding_rect()) && screen.intersects(t.visual_bounding_rect()) => {
+                        Some((t.galley.text().to_owned(), t.visual_bounding_rect().center()))
+                    }
+                    _ => None,
+                })
+                .collect::<Vec<_>>()
+        };
+        let find = |texts: &[(String, egui::Pos2)], s: &str| texts.iter().find(|t| t.0 == s).map(|t| t.1);
+        for _ in 0..3 {
+            frame(&mut chat, vec![]);
+        }
+        let f = frame(&mut chat, vec![]);
+        assert!(find(&f, "reply 79").is_some() && find(&f, "↓").is_none(), "starts at the end");
+
+        let wheel = egui::Event::MouseWheel {
+            unit: egui::MouseWheelUnit::Point,
+            delta: vec2(0.0, 5000.0),
+            phase: egui::TouchPhase::Move,
+            source: egui::MouseWheelSource::Unknown,
+            modifiers: Default::default(),
+        };
+        frame(&mut chat, vec![egui::Event::PointerMoved(pos2(300.0, 200.0)), wheel]);
+        for _ in 0..6 {
+            frame(&mut chat, vec![]);
+        }
+        let f = frame(&mut chat, vec![]);
+        assert!(find(&f, "reply 79").is_none(), "scrolled up");
+        let btn = find(&f, "↓").expect("button shown when scrolled up");
+
+        let click = |pressed| egui::Event::PointerButton { pos: btn, button: egui::PointerButton::Primary, pressed, modifiers: Default::default() };
+        frame(&mut chat, vec![egui::Event::PointerMoved(btn), click(true)]);
+        frame(&mut chat, vec![click(false)]);
+        for _ in 0..3 {
+            frame(&mut chat, vec![]);
+        }
+        // moved away so the hover tooltip doesn't count
+        let f = frame(&mut chat, vec![egui::Event::PointerMoved(pos2(300.0, 200.0))]);
+        assert!(find(&f, "reply 79").is_some() && find(&f, "↓").is_none(), "back at the end: {:?}", f.iter().map(|t| &t.0).collect::<Vec<_>>());
+
+        // still stuck to the bottom: a new reply is shown without scrolling
+        chat.items.push(Item::Assistant("reply 80".into()));
+        frame(&mut chat, vec![]);
+        let f = frame(&mut chat, vec![]);
+        assert!(find(&f, "reply 80").is_some());
     }
 
     /// Typing `/` opens the command list at once; each further letter narrows it.
