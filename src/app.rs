@@ -1220,7 +1220,7 @@ impl IdeApp {
                             if close_hover {
                                 painter.rect_filled(close_r, 3.0, pal.hover);
                             }
-                            painter.text(close_r.center(), Align2::CENTER_CENTER, "×", FontId::proportional(14.0), pal.text_weak);
+                            theme::paint_glyph(painter, close_r.center(), "×", FontId::proportional(14.0), pal.text_weak);
                         }
                         painter.line_segment([rect.right_top(), rect.right_bottom()], Stroke::new(1.0, pal.border.gamma_multiply(0.5)));
                         let resp = resp.on_hover_text(format!("{} (Alt+2)", title.as_deref().unwrap_or("New Claude Code session")));
@@ -1280,7 +1280,7 @@ impl IdeApp {
                             if close_hover {
                                 painter.rect_filled(close_r, 3.0, pal.hover);
                             }
-                            painter.text(close_r.center(), Align2::CENTER_CENTER, "×", FontId::proportional(14.0), pal.text_weak);
+                            theme::paint_glyph(painter, close_r.center(), "×", FontId::proportional(14.0), pal.text_weak);
                         }
                         painter.line_segment([rect.right_top(), rect.right_bottom()], Stroke::new(1.0, pal.border.gamma_multiply(0.5)));
                         let resp = resp.on_hover_text(d.path.display().to_string());

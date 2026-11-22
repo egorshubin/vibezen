@@ -197,8 +197,21 @@ pub fn tool_btn(ui: &mut egui::Ui, pal: &Palette, glyph: &str, tip: &str, enable
         ui.painter().rect_filled(rect, 4.0, pal.hover);
     }
     let col = if enabled { pal.text } else { pal.text_weak.gamma_multiply(0.6) };
-    ui.painter().galley_with_override_text_color(rect.center() - g.size() / 2.0, g, col);
+    ui.painter().galley_with_override_text_color(glyph_pos(&g, rect.center()), g, col);
     enabled && resp.clicked()
+}
+
+/// Paints a single icon glyph visually centered on `center`.
+pub fn paint_glyph(p: &egui::Painter, center: egui::Pos2, glyph: &str, font: FontId, color: Color32) {
+    let g = p.layout_no_wrap(glyph.to_owned(), font, color);
+    p.galley(glyph_pos(&g, center), g, color);
+}
+
+/// Where to put `g` so its ink (not its line box) is centered on `center`: symbol glyphs
+/// like × ✚ sit well below the middle of the line, so plain box-centering draws them low.
+fn glyph_pos(g: &egui::Galley, center: egui::Pos2) -> egui::Pos2 {
+    let ink = if g.mesh_bounds.is_positive() { g.mesh_bounds } else { g.rect };
+    (center - ink.center().to_vec2()).round()
 }
 
 /// Painted checkbox. `state`: Some(true) checked, Some(false) empty, None partial.

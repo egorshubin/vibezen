@@ -970,7 +970,12 @@ impl GitState {
                     .min_scrolled_height(area_h)
                     .auto_shrink([false, false])
                     .show(ui, |ui| {
+                        // exact heights, so the scroll bar only shows when the boxes really don't fit
+                        ui.spacing_mut().item_spacing.y = 0.0;
                         for (i, (title, dir, branch)) in msg_repos.iter().enumerate() {
+                            if i > 0 {
+                                ui.add_space(6.0);
+                            }
                             if multi {
                                 ui.horizontal(|ui| {
                                     ui.label(RichText::new(title).small().strong());
@@ -999,7 +1004,8 @@ impl GitState {
                             if box_resp.clicked() {
                                 ui.memory_mut(|m| m.request_focus(msg_id));
                             }
-                            let inner = box_rect.shrink(7.0);
+                            // the padding lives here, not in the TextEdit, so two lines fit the 2-line box
+                            let inner = box_rect.shrink2(vec2(10.0, 6.0));
                             let mut child = ui.new_child(egui::UiBuilder::new().max_rect(inner));
                             let msg = self.commit_msgs.entry(dir.clone()).or_default();
                             egui::ScrollArea::vertical()
@@ -1011,12 +1017,14 @@ impl GitState {
                                         egui::TextEdit::multiline(msg)
                                             .id(msg_id)
                                             .frame(Frame::NONE)
+                                            .margin(Margin::ZERO)
                                             .hint_text(if multi { format!("Commit Message for {title}") } else { "Commit Message".into() })
                                             .desired_width(f32::INFINITY)
+                                            // the default 4 rows overflow a 2-line box and always show a scroll bar
+                                            .desired_rows(1)
                                             .min_size(vec2(0.0, inner.height())),
                                     );
                                 });
-                            ui.add_space(6.0);
                         }
                     });
                 ui.add_space(gap);
