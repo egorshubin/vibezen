@@ -5,6 +5,9 @@
 #
 #   powershell -NoProfile -ExecutionPolicy Bypass -WindowStyle Hidden -File tools\freeze-monitor.ps1
 #
+# Start it from Explorer, a shortcut or Task Scheduler - not from a VibeZen agent: agents run
+# in VibeZen's kill-on-exit job, so a monitor started there dies with the next VibeZen restart.
+#
 # Log: %LOCALAPPDATA%\VibeZen\freeze-monitor.csv (rotated to .old.csv at 20 MB).
 
 param([int]$Every = 5)
@@ -23,7 +26,7 @@ if ((Test-Path $log) -and (Get-Item $log).Length -gt 20MB) {
     Move-Item $log (Join-Path $dir 'freeze-monitor.old.csv') -Force
 }
 $cols = 'time,gap_s,cpu_pct,dpc_pct,disk_busy_pct,disk_queue,disk_read_mbs,disk_write_mbs,hard_faults_s,avail_mb,gpu_max_pct,' +
-        'vz_cpu_pct,vz_ws_mb,vz_handles,vz_io_mbs,vz_responding,agents,tcp,top_io,top_cpu,top_tcp'
+        'vz_cpu_pct,vz_ws_mb,vz_handles,vz_io_mbs,vz_responding,agents,tcp,input_age_s,fg_proc,fg_hung,top_io,top_cpu,top_tcp'
 # columns changed since the log was started: keep the old one aside
 if ((Test-Path $log) -and (Get-Content $log -TotalCount 1) -ne $cols) {
     Move-Item $log (Join-Path $dir 'freeze-monitor.old.csv') -Force
@@ -45,6 +48,24 @@ $paths = @(
     '\GPU Engine(*)\Utilization Percentage'
 )
 $cores = [Environment]::ProcessorCount
+
+# The input path, for freezes with an idle system where clicks arrive a minute late:
+# input_age_s - seconds since Windows last received keyboard/mouse input; if it keeps growing
+#               while you click, the input does not even reach Windows (mouse/touchpad driver)
+# fg_proc     - the process owning the foreground window, which gets the input
+# fg_hung     - Windows considers that window hung (no message processing for 5 s)
+Add-Type -Namespace FreezeMon -Name Win -MemberDefinition @'
+[StructLayout(LayoutKind.Sequential)] public struct LASTINPUTINFO { public uint cbSize; public uint dwTime; }
+[DllImport("user32.dll")] public static extern bool GetLastInputInfo(ref LASTINPUTINFO plii);
+[DllImport("user32.dll")] public static extern IntPtr GetForegroundWindow();
+[DllImport("user32.dll")] public static extern uint GetWindowThreadProcessId(IntPtr hWnd, out uint pid);
+[DllImport("user32.dll")] public static extern bool IsHungAppWindow(IntPtr hWnd);
+[DllImport("kernel32.dll")] public static extern uint GetTickCount();
+public static double InputAgeSeconds() {
+    var i = new LASTINPUTINFO(); i.cbSize = (uint)Marshal.SizeOf(i);
+    return GetLastInputInfo(ref i) ? unchecked(GetTickCount() - i.dwTime) / 1000.0 : -1;
+}
+'@
 $last = Get-Date
 
 while ($true) {
@@ -72,6 +93,10 @@ while ($true) {
         $topTcp = $tcp | Group-Object OwningProcess | Sort-Object Count -Descending | Select-Object -First 3 | ForEach-Object {
             '{0}={1}' -f (Get-Process -Id ([int]$_.Name) -ErrorAction SilentlyContinue).ProcessName, $_.Count
         }
+        $fg = [FreezeMon.Win]::GetForegroundWindow()
+        $fgPid = [uint32]0
+        [void][FreezeMon.Win]::GetWindowThreadProcessId($fg, [ref]$fgPid)
+        $fgProc = if ($fgPid) { (Get-Process -Id $fgPid -ErrorAction SilentlyContinue).ProcessName } else { '' }
         $row = @(
             $now.ToString('s'), ('{0:F0}' -f $gap),
             ('{0:F0}' -f (& $one '% processor time')), ('{0:F1}' -f (& $one '% dpc time')),
@@ -80,6 +105,7 @@ while ($true) {
             ('{0:F0}' -f (& $one 'pages input/sec')), ('{0:F0}' -f (& $one 'available mbytes')), ('{0:F0}' -f $gpu),
             ('{0:F0}' -f ($vzCpu / $cores)), $(if ($vz) { [int]($vz.WorkingSet64 / 1MB) } else { '' }), $(if ($vz) { $vz.HandleCount } else { '' }),
             ('{0:F1}' -f ($vzIo / 1MB)), $(if ($vz) { $vz.Responding } else { '' }), $agents, $tcp.Count,
+            ('{0:F0}' -f [FreezeMon.Win]::InputAgeSeconds()), $fgProc, [FreezeMon.Win]::IsHungAppWindow($fg),
             ('"' + ($topIo -join ' ') + '"'), ('"' + ($topCpu -join ' ') + '"'), ('"' + ($topTcp -join ' ') + '"')
         ) -replace ',', '.' # decimal commas of a localized format would break the CSV
         # (the quoted columns hold no commas: their separators are spaces)
