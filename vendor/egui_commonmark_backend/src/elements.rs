@@ -204,6 +204,8 @@ pub fn code_block<'t>(
         .desired_width(max_width)
         // prevent trailing lines
         .desired_rows(1)
+        // a single line is shorter than the minimum height; keep it in the middle, not at the top
+        .align(egui::Align2::LEFT_CENTER)
         .show(ui);
 
     if let Some(range) = scroll_to_active_match
@@ -225,28 +227,46 @@ pub fn code_block<'t>(
         ),
     );
 
-    // Copy icon
+    // Copy icon, level with the first line of code
     let spacing = &ui.style().spacing;
-    let position = egui::pos2(
-        frame_rect.right_top().x - spacing.icon_width * 0.5 - spacing.button_padding.x,
-        frame_rect.right_top().y + spacing.button_padding.y * 2.0,
+    let first_row_h = output
+        .galley
+        .rows
+        .first()
+        .map_or(frame_rect.height(), |r| r.rect().height());
+    let center = egui::pos2(
+        frame_rect.right() - spacing.icon_width * 0.5 - spacing.button_padding.x,
+        output.galley_pos.y + first_row_h / 2.0,
     );
 
     // Check if we should show ✔ instead of 🗐 if the text was copied and the mouse is hovered
     let persistent_id = ui.make_persistent_id(output.response.id);
     let copied_icon = ui.memory_mut(|m| *m.data.get_temp_mut_or_default::<bool>(persistent_id));
 
-    let copy_button = ui
-        .put(
-            egui::Rect {
-                min: position,
-                max: position,
-            },
-            egui::Button::new(if copied_icon { "✔" } else { "🗐" })
-                .small()
-                .frame(false)
-                .fill(egui::Color32::TRANSPARENT),
-        )
+    let button_rect = Rect::from_center_size(center, Vec2::splat(18.0));
+    let copy_button = ui.interact(button_rect, persistent_id.with("copy"), Sense::click());
+    let visuals = ui.style().interact(&copy_button);
+    if copy_button.hovered() {
+        ui.painter()
+            .rect_filled(button_rect, 3.0, visuals.weak_bg_fill);
+    }
+    // centered on the glyph's ink: 🗐 sits well below the middle of its line box
+    let glyph = ui.painter().layout_no_wrap(
+        (if copied_icon { "✔" } else { "🗐" }).to_owned(),
+        egui::TextStyle::Small.resolve(ui.style()),
+        visuals.text_color(),
+    );
+    let ink = if glyph.mesh_bounds.is_positive() {
+        glyph.mesh_bounds
+    } else {
+        glyph.rect
+    };
+    ui.painter().galley(
+        (center - ink.center().to_vec2()).round(),
+        glyph,
+        visuals.text_color(),
+    );
+    let copy_button = copy_button
         // workaround for a regression after egui 0.27 where the edit cursor was shown even when
         // hovering over the button. We try interact_cursor first to allow the cursor to be
         // overridden

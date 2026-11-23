@@ -1069,55 +1069,54 @@ impl CommonMarkViewerInternal {
             #[cfg(feature = "regex")]
             let scratch_start = self.search_match_ys_scratch.len();
 
-            egui::Frame::group(ui.style()).show(ui, |ui| {
+            let frame = egui::Frame::group(ui.style());
+            // from `max_width`, like code blocks: the space left in the wrapping text layout
+            // depends on the cursor and on last frame's table size, so the table came out
+            // narrow and its layout shifted from frame to frame
+            let inner_width = max_width - frame.total_margin().sum().x;
+            frame.show(ui, |ui| {
                 let Table { header, rows } = parse_table(events);
 
                 ui.spacing_mut().scroll.content_margin.bottom = ui.spacing().scroll.bar_width as i8;
 
+                // VibeZen: columns are sized to fit the width and long cells wrap,
+                // instead of every cell being one unwrapped line
+                let gap = 16.0;
+                let n_cols = std::iter::once(&header).chain(&rows).map(Vec::len).max().unwrap_or(0);
+                let mut natural = vec![0.0f32; n_cols];
+                for row in std::iter::once(&header).chain(&rows) {
+                    for (i, col) in row.iter().enumerate() {
+                        natural[i] = natural[i].max(cell_natural_width(ui, col));
+                    }
+                }
+                let total = inner_width - gap * n_cols.saturating_sub(1) as f32;
+                let widths = fit_columns(&natural, total);
+                let row_w = widths.iter().sum::<f32>() + gap * n_cols.saturating_sub(1) as f32;
+                let stripe = ui.visuals().faint_bg_color;
+
                 egui::ScrollArea::horizontal()
                     .id_salt(id.with("_hscroll"))
                     .show(ui, |ui| {
-                        egui::Grid::new(id).striped(true).show(ui, |ui| {
-                            for col in header {
-                                ui.horizontal(|ui| {
-                                    for (e, src_span) in col {
-                                        let tmp_start = std::mem::replace(
-                                            &mut self.line.should_start_newline,
-                                            false,
-                                        );
-                                        let tmp_end = std::mem::replace(
-                                            &mut self.line.should_end_newline,
-                                            false,
-                                        );
-                                        self.event(ui, e, src_span, cache, options, max_width);
-                                        self.line.should_start_newline = tmp_start;
-                                        self.line.should_end_newline = tmp_end;
-                                    }
-                                });
-                            }
-
-                            ui.end_row();
-
-                            for row in rows {
-                                for col in row {
-                                    ui.horizontal(|ui| {
-                                        for (e, src_span) in col {
-                                            let tmp_start = std::mem::replace(
-                                                &mut self.line.should_start_newline,
-                                                false,
-                                            );
-                                            let tmp_end = std::mem::replace(
-                                                &mut self.line.should_end_newline,
-                                                false,
-                                            );
-                                            self.event(ui, e, src_span, cache, options, max_width);
-                                            self.line.should_start_newline = tmp_start;
-                                            self.line.should_end_newline = tmp_end;
-                                        }
+                        // Plain rows, not an egui::Grid: a grid centres each cell in last
+                        // frame's row height, so a cell growing as its text wraps started
+                        // mid-row and the rows drifted apart.
+                        ui.with_layout(egui::Layout::top_down(egui::Align::Min), |ui| {
+                            ui.spacing_mut().item_spacing.y = 0.0;
+                            for (r, row) in std::iter::once(header).chain(rows).enumerate() {
+                                egui::Frame::NONE
+                                    .fill(if r % 2 == 1 { stripe } else { egui::Color32::TRANSPARENT })
+                                    .inner_margin(egui::Margin::symmetric(0, 3))
+                                    .show(ui, |ui| {
+                                        ui.with_layout(egui::Layout::left_to_right(egui::Align::Min), |ui| {
+                                            ui.set_min_width(row_w);
+                                            for (i, col) in row.into_iter().enumerate() {
+                                                if i > 0 {
+                                                    ui.add_space(gap);
+                                                }
+                                                self.table_cell(ui, col, widths[i], cache, options, max_width);
+                                            }
+                                        });
                                     });
-                                }
-
-                                ui.end_row();
                             }
                         });
                     });
@@ -1158,6 +1157,39 @@ impl CommonMarkViewerInternal {
 
             self.line.try_insert_end(ui);
         }
+    }
+
+    /// One table cell, exactly `width` wide, its text wrapping at the cell edge.
+    fn table_cell<'e>(
+        &mut self,
+        ui: &mut Ui,
+        col: Vec<(pulldown_cmark::Event<'e>, Range<usize>)>,
+        width: f32,
+        cache: &mut CommonMarkCache,
+        options: &CommonMarkOptions,
+        max_width: f32,
+    ) {
+        ui.allocate_ui_with_layout(
+            egui::vec2(width, 0.0),
+            // the same text layout as the document around the table
+            egui::Layout::left_to_right(egui::Align::BOTTOM).with_main_wrap(true),
+            |ui| {
+                ui.set_width(width);
+                ui.set_row_height(ui.text_style_height(&TextStyle::Body));
+                for (e, src_span) in col {
+                    // a cell's events start with the previous cell's end, which pads with
+                    // spaces; the grid gap separates the columns here
+                    if matches!(e, pulldown_cmark::Event::End(pulldown_cmark::TagEnd::TableCell)) {
+                        continue;
+                    }
+                    let tmp_start = std::mem::replace(&mut self.line.should_start_newline, false);
+                    let tmp_end = std::mem::replace(&mut self.line.should_end_newline, false);
+                    self.event(ui, e, src_span, cache, options, max_width);
+                    self.line.should_start_newline = tmp_start;
+                    self.line.should_end_newline = tmp_end;
+                }
+            },
+        );
     }
 
     fn event(
@@ -1609,6 +1641,55 @@ fn apply_pending_scroll_delta(vc: &mut ViewerCache, ui: &Ui) {
     if delta != egui::Vec2::ZERO {
         ui.scroll_with_delta(delta);
     }
+}
+
+/// Width of a table cell's text on one line (an estimate: plain body font).
+fn cell_natural_width(ui: &Ui, col: &[(pulldown_cmark::Event<'_>, Range<usize>)]) -> f32 {
+    let mut text = String::new();
+    let mut code_pad = 0.0;
+    for (e, _) in col {
+        match e {
+            pulldown_cmark::Event::Text(t) => text.push_str(t),
+            pulldown_cmark::Event::Code(t) => {
+                text.push_str(t);
+                code_pad += 8.0;
+            }
+            pulldown_cmark::Event::SoftBreak | pulldown_cmark::Event::HardBreak => text.push(' '),
+            _ => {}
+        }
+    }
+    let font = TextStyle::Body.resolve(ui.style());
+    let w = ui.fonts_mut(|f| f.layout_no_wrap(text, font, egui::Color32::WHITE).size().x);
+    // slack for bold/monospace runs measured with the body font
+    (w * 1.05 + code_pad + 2.0).ceil()
+}
+
+/// Column widths summing to at most `total`: columns narrower than an equal share keep
+/// their natural width, the wider ones split what's left equally and wrap.
+fn fit_columns(natural: &[f32], total: f32) -> Vec<f32> {
+    const MIN_COL: f32 = 60.0;
+    if natural.iter().sum::<f32>() <= total {
+        return natural.iter().map(|w| w.max(8.0)).collect();
+    }
+    let mut widths = vec![0.0; natural.len()];
+    let mut open: Vec<usize> = (0..natural.len()).collect();
+    let mut left = total;
+    while !open.is_empty() {
+        let share = (left / open.len() as f32).max(MIN_COL);
+        let (fit, rest): (Vec<usize>, Vec<usize>) = open.iter().partition(|&&i| natural[i] <= share);
+        if fit.is_empty() {
+            for i in rest {
+                widths[i] = share;
+            }
+            break;
+        }
+        for i in fit {
+            widths[i] = natural[i].max(8.0);
+            left -= widths[i];
+        }
+        open = rest;
+    }
+    widths
 }
 
 #[cfg(all(test, feature = "regex"))]

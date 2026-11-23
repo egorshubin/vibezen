@@ -1173,4 +1173,75 @@ mod tests {
             }
         }
     }
+
+    /// Table cells wrap inside their column instead of running into the next one, a table
+    /// that fits keeps its cells on one line, and the layout is the same every frame.
+    #[test]
+    fn table_cells_wrap_in_their_columns() {
+        let short = "Limits:
+
+| Сервис | Лимит |
+|---|---|
+| MySQL (буфер 512 МБ) | 1 ГБ |
+| Сайт (FrankenPHP) | 768 МБ |
+| Очередь (ИИ-задачи) | 384 МБ |
+| Итого максимум | ~2,9 ГБ |
+";
+        let wide = "| Тип | Примеры | Вывод |
+|---|---|---|
+| Общий поиск | tender search 500 / $10, tender alerts 50 / $9, tender database 50 / $37, uk tenders 500 / $8 | Мало: такие фразы почти никто не ищет, это видно по частотности |
+| Софт | procurement software 5k / $63 | Высокие ставки, но это не ваша аудитория |
+";
+        for (md, must_fit) in [(short, true), (wide, false)] {
+            let ctx = egui::Context::default();
+            crate::app::setup_fonts(&ctx);
+            crate::theme::apply(&ctx, true, 14.0);
+            let mut cache = egui_commonmark::CommonMarkCache::default();
+            let mut input = egui::RawInput::default();
+            let width = 420.0;
+            input.screen_rect = Some(egui::Rect::from_min_size(egui::Pos2::ZERO, vec2(width, 600.0)));
+            let mut frames = vec![];
+            for _ in 0..4 {
+                let mut o = ctx.run_ui(input.clone(), |ui| markdown(ui, &mut cache, md));
+                o.textures_delta.clear();
+                // (text, rect, rows) of every non-blank text run; the rect leaves out the
+                // leading space a label continuing a wrapped line starts with
+                let runs: Vec<(String, egui::Rect, usize)> = o
+                    .shapes
+                    .iter()
+                    .filter_map(|cs| match &cs.shape {
+                        egui::Shape::Text(t) if !t.galley.text().trim().is_empty() => {
+                            let rect = t
+                                .galley
+                                .rows
+                                .iter()
+                                .fold(egui::Rect::NOTHING, |r, row| r.union(row.rect_without_leading_space()));
+                            Some((t.galley.text().to_owned(), rect.translate(t.pos.to_vec2()), t.galley.rows.len()))
+                        }
+                        _ => None,
+                    })
+                    .collect();
+                frames.push(runs);
+            }
+            let runs = frames.last().unwrap();
+            assert_eq!(&frames[2], runs, "layout changes between frames");
+            for word in ["Сервис", "Лимит", "MySQL", "768 МБ", "2,9 ГБ", "Тип", "Вывод"] {
+                if md.contains(word) {
+                    assert!(runs.iter().any(|r| r.0.contains(word)), "{word:?} not drawn: {runs:#?}");
+                }
+            }
+            for (i, a) in runs.iter().enumerate() {
+                assert!(a.1.max.x <= width + 0.5, "{:?} runs past the right edge: {:?}", a.0, a.1);
+                if must_fit && md.contains(a.0.trim()) && a.0.contains(' ') {
+                    assert_eq!(a.2, 1, "{:?} wrapped although the table fits", a.0);
+                }
+                for b in &runs[i + 1..] {
+                    assert!(!a.1.shrink(0.5).intersects(b.1.shrink(0.5)), "{:?} {:?} overlaps {:?} {:?}", a.0, a.1, b.0, b.1);
+                }
+            }
+            if !must_fit {
+                assert!(runs.iter().any(|r| r.0.starts_with("tender search") && r.2 > 1), "long cell didn't wrap: {runs:#?}");
+            }
+        }
+    }
 }
