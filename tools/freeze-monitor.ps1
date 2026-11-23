@@ -23,7 +23,11 @@ if ((Test-Path $log) -and (Get-Item $log).Length -gt 20MB) {
     Move-Item $log (Join-Path $dir 'freeze-monitor.old.csv') -Force
 }
 $cols = 'time,gap_s,cpu_pct,dpc_pct,disk_busy_pct,disk_queue,disk_read_mbs,disk_write_mbs,hard_faults_s,avail_mb,gpu_max_pct,' +
-        'vz_cpu_pct,vz_ws_mb,vz_handles,vz_io_mbs,vz_responding,agents,top_io,top_cpu'
+        'vz_cpu_pct,vz_ws_mb,vz_handles,vz_io_mbs,vz_responding,agents,tcp,top_io,top_cpu,top_tcp'
+# columns changed since the log was started: keep the old one aside
+if ((Test-Path $log) -and (Get-Content $log -TotalCount 1) -ne $cols) {
+    Move-Item $log (Join-Path $dir 'freeze-monitor.old.csv') -Force
+}
 if (-not (Test-Path $log)) { [IO.File]::AppendAllText($log, "$cols`r`n") }
 [IO.File]::AppendAllText($log, "# monitor started $(Get-Date -Format s)`r`n")
 
@@ -63,6 +67,11 @@ while ($true) {
         if ($vz) {
             $agents = @(Get-CimInstance Win32_Process -Filter "ParentProcessId=$($vz.Id)").Count
         }
+        # TCP sockets per process: Windows ran out of ephemeral ports before a freeze
+        $tcp = @(Get-NetTCPConnection -ErrorAction SilentlyContinue)
+        $topTcp = $tcp | Group-Object OwningProcess | Sort-Object Count -Descending | Select-Object -First 3 | ForEach-Object {
+            '{0}={1}' -f (Get-Process -Id ([int]$_.Name) -ErrorAction SilentlyContinue).ProcessName, $_.Count
+        }
         $row = @(
             $now.ToString('s'), ('{0:F0}' -f $gap),
             ('{0:F0}' -f (& $one '% processor time')), ('{0:F1}' -f (& $one '% dpc time')),
@@ -70,8 +79,8 @@ while ($true) {
             ('{0:F1}' -f ((& $one 'disk read bytes/sec') / 1MB)), ('{0:F1}' -f ((& $one 'disk write bytes/sec') / 1MB)),
             ('{0:F0}' -f (& $one 'pages input/sec')), ('{0:F0}' -f (& $one 'available mbytes')), ('{0:F0}' -f $gpu),
             ('{0:F0}' -f ($vzCpu / $cores)), $(if ($vz) { [int]($vz.WorkingSet64 / 1MB) } else { '' }), $(if ($vz) { $vz.HandleCount } else { '' }),
-            ('{0:F1}' -f ($vzIo / 1MB)), $(if ($vz) { $vz.Responding } else { '' }), $agents,
-            ('"' + ($topIo -join ' ') + '"'), ('"' + ($topCpu -join ' ') + '"')
+            ('{0:F1}' -f ($vzIo / 1MB)), $(if ($vz) { $vz.Responding } else { '' }), $agents, $tcp.Count,
+            ('"' + ($topIo -join ' ') + '"'), ('"' + ($topCpu -join ' ') + '"'), ('"' + ($topTcp -join ' ') + '"')
         ) -replace ',', '.' # decimal commas of a localized format would break the CSV
         # (the quoted columns hold no commas: their separators are spaces)
         [IO.File]::AppendAllText($log, (($row -join ',') + "`r`n"))
