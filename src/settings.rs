@@ -29,6 +29,8 @@ pub struct Settings {
     pub recent: Vec<String>,
     pub claude_model: String,
     pub claude_mode: String,
+    /// save edited files shortly after typing stops, on focus loss and on leaving a project
+    pub auto_save: bool,
     pub notify: bool,
     pub notify_only_unfocused: bool,
     pub notify_sound: bool,
@@ -47,6 +49,7 @@ impl Default for Settings {
             recent: vec![],
             claude_model: "default".into(),
             claude_mode: "acceptEdits".into(),
+            auto_save: true,
             notify: true,
             notify_only_unfocused: false,
             notify_sound: true,

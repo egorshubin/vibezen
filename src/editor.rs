@@ -12,7 +12,7 @@ use eframe::egui::{
 use std::hash::{Hash, Hasher};
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
-use std::time::SystemTime;
+use std::time::{Instant, SystemTime};
 
 const IMAGE_EXT: &[&str] = &["png", "jpg", "jpeg", "gif", "bmp", "webp", "ico"];
 const MARKDOWN_EXT: &[&str] = &["md", "markdown", "mdx"];
@@ -50,6 +50,8 @@ pub struct Doc {
     pub kind: DocKind,
     pub text: String,
     pub dirty: bool,
+    /// last unsaved edit, for auto-save
+    pub edited_at: Option<Instant>,
     saved_hash: u64,
     crlf: bool,
     bom: bool,
@@ -97,6 +99,7 @@ impl Doc {
             kind: DocKind::Text,
             text: String::new(),
             dirty: false,
+            edited_at: None,
             saved_hash: 0,
             crlf: false,
             bom: false,
@@ -141,6 +144,7 @@ impl Doc {
             saved_hash: 0,
             text,
             dirty: false,
+            edited_at: None,
             crlf: false,
             bom: false,
             mtime: None,
@@ -202,6 +206,7 @@ impl Doc {
                 self.text = text;
                 self.kind = DocKind::Text;
                 self.dirty = false;
+                self.edited_at = None;
                 self.changed_on_disk = false;
                 self.version += 1;
                 self.mtime = mtime_of(&self.path);
@@ -224,9 +229,23 @@ impl Doc {
         std::fs::write(&self.path, out).map_err(|e| format!("Saving {} failed: {e}", self.title))?;
         self.saved_hash = hash_str(&self.text);
         self.dirty = false;
+        self.edited_at = None;
         self.changed_on_disk = false;
         self.mtime = mtime_of(&self.path);
         Ok(())
+    }
+
+    /// Save unless the file was changed or removed on disk under our edits —
+    /// an agent's write is never overwritten silently. `Ok(true)` = written.
+    pub fn auto_save(&mut self, hl: &Highlighting) -> Result<bool, String> {
+        if self.kind != DocKind::Text || !self.dirty {
+            return Ok(false);
+        }
+        self.check_disk(hl);
+        if self.changed_on_disk || !self.path.is_file() {
+            return Ok(false);
+        }
+        self.save().map(|_| true)
     }
 
     /// Reload from disk if the file changed and we have no unsaved edits.
@@ -704,6 +723,7 @@ fn show_text(ui: &mut Ui, doc: &mut Doc, cx: &EditorCtx) {
     if changed && !read_only {
         doc.version += 1;
         doc.dirty = hash_str(&doc.text) != doc.saved_hash;
+        doc.edited_at = doc.dirty.then(Instant::now);
     }
     if !doc.undo_set && !read_only {
         if let Some(mut st) = TextEditState::load(&ctx, doc_id) {

@@ -18,6 +18,9 @@ use eframe::egui::{
 use std::path::{Path, PathBuf};
 use std::time::Duration;
 
+/// Quiet time after the last keystroke before an edited file is auto-saved.
+const AUTO_SAVE_DELAY: Duration = Duration::from_millis(1500);
+
 #[derive(PartialEq, Clone, Copy)]
 enum Attention {
     None,
@@ -458,6 +461,9 @@ impl IdeApp {
 
     fn switch(&mut self, i: usize) {
         if i < self.projects.len() {
+            if i != self.active {
+                self.auto_save(true);
+            }
             self.active = i;
             let p = &mut self.projects[i];
             p.attention = Attention::None;
@@ -553,6 +559,9 @@ impl IdeApp {
         if i >= p.docs.len() {
             return;
         }
+        if self.settings.auto_save && !force {
+            let _ = p.docs[i].auto_save(&self.hl);
+        }
         if p.docs[i].dirty && !force {
             self.confirm = Some(Confirm::CloseTab(i));
             return;
@@ -586,6 +595,35 @@ impl IdeApp {
             self.active -= 1;
         }
         self.persist();
+    }
+
+    /// Auto-save edited files: those idle for `AUTO_SAVE_DELAY`, or all of them with `now`
+    /// (focus lost, project left, exit). Files changed on disk meanwhile are left alone.
+    fn auto_save(&mut self, now: bool) {
+        if !self.settings.auto_save {
+            return;
+        }
+        let mut errs = vec![];
+        for p in &mut self.projects {
+            let mut saved = false;
+            for d in &mut p.docs {
+                if !d.dirty || !(now || d.edited_at.is_some_and(|t| t.elapsed() >= AUTO_SAVE_DELAY)) {
+                    continue;
+                }
+                match d.auto_save(&self.hl) {
+                    Ok(s) => saved |= s,
+                    Err(e) => errs.push(e),
+                }
+                d.edited_at = None; // one attempt per burst of edits, no retry loop
+            }
+            if saved {
+                p.git.refresh_status();
+                p.last_active = util::unix_now();
+            }
+        }
+        if !errs.is_empty() {
+            self.message = Some((errs.join("; "), true));
+        }
     }
 
     fn save_all(&mut self) {
@@ -911,6 +949,10 @@ impl IdeApp {
                                 acts.push(Action::CloseProject(i));
                                 ui.close();
                             }
+                            if ui.button("Copy Path").clicked() {
+                                acts.push(Action::Copy(p.root.display().to_string()));
+                                ui.close();
+                            }
                             if ui.button("Reveal in Explorer").clicked() {
                                 acts.push(Action::Reveal(p.root.clone()));
                                 ui.close();
@@ -963,6 +1005,10 @@ impl IdeApp {
                                 }
                                 if ui.button("⎇  Open — git").clicked() {
                                     acts.push(Action::OpenProjectView(path.clone(), View::Git));
+                                    ui.close();
+                                }
+                                if ui.button("Copy Path").clicked() {
+                                    acts.push(Action::Copy(path.display().to_string()));
                                     ui.close();
                                 }
                                 if ui.button("Remove from Recent").clicked() {
@@ -1921,6 +1967,12 @@ impl IdeApp {
                         retheme = true;
                     }
                     ui.end_row();
+                    ui.label("Editor");
+                    ui.checkbox(&mut self.settings.auto_save, "Auto-save edited files").on_hover_text(
+                        "Saves 1.5 s after you stop typing, when VibeZen loses focus and when you switch projects.
+Files changed on disk meanwhile (e.g. by an agent) are not overwritten.",
+                    );
+                    ui.end_row();
                     ui.label("Notifications");
                     ui.vertical(|ui| {
                         ui.checkbox(&mut self.settings.notify, "Notify when Claude finishes / needs approval");
@@ -2347,6 +2399,13 @@ fn project_row(ui: &mut Ui, pal: &Palette, collapsed: bool, row: ProjectRow, sal
 
 impl eframe::App for IdeApp {
     fn logic(&mut self, ctx: &egui::Context, _frame: &mut eframe::Frame) {
+        self.auto_save(false);
+        if self.settings.auto_save {
+            let pending = self.projects.iter().flat_map(|p| &p.docs).filter_map(|d| d.edited_at).min();
+            if let Some(t) = pending {
+                ctx.request_repaint_after(AUTO_SAVE_DELAY.saturating_sub(t.elapsed()));
+            }
+        }
         let mut notes: Vec<(String, String, usize, Color32)> = vec![];
         let mut attention = false;
         let mut replied = false;
@@ -2419,6 +2478,9 @@ impl eframe::App for IdeApp {
 
         // focus tracking → reload files changed by external tools
         let focused = ctx.input(|i| i.viewport().focused.unwrap_or(true));
+        if !focused && self.focused {
+            self.auto_save(true);
+        }
         if focused && !self.focused {
             let hl = &self.hl;
             if let Some(p) = self.projects.get_mut(self.active) {
@@ -2444,6 +2506,7 @@ impl eframe::App for IdeApp {
 
         // close request
         if ctx.input(|i| i.viewport().close_requested()) && !self.allow_close {
+            self.auto_save(true);
             let dirty = self.projects.iter().any(|p| p.dirty_count() > 0);
             let busy = self.projects.iter().any(|p| p.busy());
             if dirty || busy {

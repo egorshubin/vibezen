@@ -166,6 +166,10 @@ impl FileTree {
                 ui.close();
             }
             ui.separator();
+            if ui.button("Copy Path").clicked() {
+                action = Some(TreeAction::CopyPath(root.display().to_string()));
+                ui.close();
+            }
             if ui.button("Reveal in Explorer").clicked() {
                 action = Some(TreeAction::Reveal(root.clone()));
                 ui.close();
