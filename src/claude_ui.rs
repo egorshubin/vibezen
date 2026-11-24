@@ -230,7 +230,7 @@ fn markdown(ui: &mut Ui, cache: &mut egui_commonmark::CommonMarkCache, text: &st
 }
 
 /// Y of the first text line's baseline within a galley.
-fn first_baseline(g: &egui::Galley) -> f32 {
+pub(crate) fn first_baseline(g: &egui::Galley) -> f32 {
     g.rows
         .first()
         .and_then(|r| r.row.glyphs.first().map(|gl| r.pos.y + gl.pos.y))

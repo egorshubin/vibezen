@@ -1395,6 +1395,11 @@ impl IdeApp {
         ui.horizontal(|ui| {
             ui.label(RichText::new("✻").color(claude_ui::CLAUDE).size(16.0));
             ui.label(RichText::new("Claude Code").strong());
+            ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
+                if ui.small_button("«").on_hover_text("Hide panel").clicked() {
+                    self.left = None;
+                }
+            });
         });
         ui.add_space(6.0);
         let new_btn = egui::Button::new(RichText::new("✚  New session").color(Color32::WHITE)).fill(pal.accent);
@@ -2622,7 +2627,14 @@ impl eframe::App for IdeApp {
                         match tab {
                             LeftTab::Claude => return self.claude_panel(ui, &pal),
                             LeftTab::Find => {
-                                ui.label(RichText::new("🔍  Find in Files").strong());
+                                ui.horizontal(|ui| {
+                                    ui.label(RichText::new("🔍  Find in Files").strong());
+                                    ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
+                                        if ui.small_button("«").on_hover_text("Hide panel").clicked() {
+                                            self.left = None;
+                                        }
+                                    });
+                                });
                                 ui.add_space(4.0);
                                 return self.find_panel(ui, &pal, &mut acts);
                             }
@@ -2635,6 +2647,9 @@ impl eframe::App for IdeApp {
                                 ui.horizontal(|ui| {
                                     ui.label(RichText::new("⎇  Git Log").strong());
                                     ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
+                                        if ui.small_button("«").on_hover_text("Hide panel").clicked() {
+                                            self.left = None;
+                                        }
                                         if ui.small_button("⟳").on_hover_text("Refresh").clicked() {
                                             p.git.refresh_all();
                                         }
@@ -2659,6 +2674,10 @@ impl eframe::App for IdeApp {
                                         TreeAction::Terminal(path) => Action::Terminal(path),
                                         TreeAction::CopyPath(s) => Action::Copy(s),
                                         TreeAction::AskClaude(path) => Action::AskClaude(util::rel_path(&p.root, &path)),
+                                        TreeAction::HidePanel => {
+                                            self.left = None;
+                                            return;
+                                        }
                                     });
                                 }
                             }
@@ -2668,6 +2687,10 @@ impl eframe::App for IdeApp {
                                         GitUiAction::OpenDiff { title, key, text } => Action::OpenDiff { title, key, text },
                                         GitUiAction::OpenFile(f) => Action::OpenFile(f, None),
                                         GitUiAction::ConfirmRollback(f) => Action::Confirm(Confirm::Rollback(f)),
+                                        GitUiAction::HidePanel => {
+                                            self.left = None;
+                                            continue;
+                                        }
                                     });
                                 }
                             }

@@ -1,6 +1,7 @@
 //! Git integration: status, commit, push/pull/fetch, branches, log graph, diffs.
 //! All git commands run on background threads; results come back over a channel.
 
+use crate::claude_ui::first_baseline;
 use crate::theme::{LANES, Palette, paint_check, tool_btn};
 use crate::util::hidden_cmd;
 use eframe::egui::{self, Align, Align2, Color32, FontId, Frame, Layout, Margin, RichText, Sense, Stroke, Ui, pos2, vec2};
@@ -125,6 +126,7 @@ pub enum GitUiAction {
     OpenDiff { title: String, key: String, text: String },
     OpenFile(PathBuf),
     ConfirmRollback(Vec<GitFile>),
+    HidePanel,
 }
 
 pub struct GitState {
@@ -933,6 +935,9 @@ impl GitState {
                         }
                     }
                     ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
+                        if tool_btn(ui, pal, "«", "Hide panel", true) {
+                            actions.push(GitUiAction::HidePanel);
+                        }
                         if !self.status.branch.is_empty() {
                             ui.label(RichText::new(format!("⎇ {}", self.status.branch)).small().color(pal.text_weak));
                         }
@@ -1120,11 +1125,16 @@ impl GitState {
                             let title = if multi { self.repo_title(&r.dir) } else { "Unpushed".into() };
                             let g = p.layout_no_wrap(title, FontId::proportional(13.0), pal.text);
                             let gw = g.size().x;
-                            p.galley(pos2(x + 14.0, rect.center().y - g.size().y / 2.0), g, pal.text);
+                            let ppp = ui.ctx().pixels_per_point();
+                            let title_top = ((rect.center().y - g.size().y / 2.0) * ppp).round() / ppp;
+                            let base = title_top + first_baseline(&g);
+                            p.galley(pos2(x + 14.0, title_top), g, pal.text);
                             let n = r.outgoing.len();
                             let to = r.upstream.clone().unwrap_or_else(|| "origin (new branch)".into());
                             let info = format!("{n} {} → {to}", if n == 1 { "commit" } else { "commits" });
-                            p.text(pos2(x + 14.0 + gw + 8.0, rect.center().y), Align2::LEFT_CENTER, info, FontId::proportional(12.0), pal.text_weak);
+                            let ig = p.layout_no_wrap(info, FontId::proportional(12.0), pal.text_weak);
+                            let info_top = ((base - first_baseline(&ig)) * ppp).round() / ppp;
+                            p.galley(pos2(x + 14.0 + gw + 8.0, info_top), ig, pal.text_weak);
                             if resp.clicked() {
                                 toggle = Some(key);
                             }
@@ -1147,21 +1157,26 @@ impl GitState {
                                 if resp.hovered() {
                                     p.rect_filled(rect, 3.0, pal.hover);
                                 }
-                                let mid = rect.center().y;
+                                // the subject is centred; hash and date sit on its baseline (centring
+                                // each font's own box would lift the monospace hash)
+                                let ppp = ui.ctx().pixels_per_point();
+                                let snap = |v: f32| (v * ppp).round() / ppp;
+                                let sg = p.layout_no_wrap(c.subject.clone(), FontId::proportional(13.0), pal.text);
+                                let subj_top = snap(rect.center().y - sg.size().y / 2.0);
+                                let base = subj_top + first_baseline(&sg);
                                 let mut x = rect.min.x + 22.0;
                                 let hg = p.layout_no_wrap(c.short.clone(), FontId::monospace(11.5), pal.text_weak);
                                 let hw = hg.size().x;
-                                p.galley(pos2(x, mid - hg.size().y / 2.0), hg, pal.text_weak);
+                                p.galley(pos2(x, snap(base - first_baseline(&hg))), hg, pal.text_weak);
                                 x += hw + 8.0;
                                 let mut subj_max = rect.max.x - 6.0;
                                 if rect.width() >= 280.0 {
                                     let dg = p.layout_no_wrap(c.date.clone(), FontId::proportional(11.5), pal.text_weak);
                                     subj_max -= dg.size().x + 10.0;
-                                    p.galley(pos2(rect.max.x - 6.0 - dg.size().x, mid - dg.size().y / 2.0), dg, pal.text_weak);
+                                    p.galley(pos2(rect.max.x - 6.0 - dg.size().x, snap(base - first_baseline(&dg))), dg, pal.text_weak);
                                 }
-                                let sg = p.layout_no_wrap(c.subject.clone(), FontId::proportional(13.0), pal.text);
                                 let clip = egui::Rect::from_min_max(pos2(x, rect.min.y), pos2(subj_max.max(x), rect.max.y));
-                                p.with_clip_rect(p.clip_rect().intersect(clip)).galley(pos2(x, mid - sg.size().y / 2.0), sg, pal.text);
+                                p.with_clip_rect(p.clip_rect().intersect(clip)).galley(pos2(x, subj_top), sg, pal.text);
                                 if resp.clicked() {
                                     diff = Some((r.dir.clone(), c.hash.clone()));
                                 }

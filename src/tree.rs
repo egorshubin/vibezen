@@ -23,6 +23,7 @@ pub enum TreeAction {
     Terminal(PathBuf),
     CopyPath(String),
     AskClaude(PathBuf),
+    HidePanel,
 }
 
 pub struct FileTree {
@@ -147,6 +148,9 @@ impl FileTree {
             ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
                 let into = crate::util::rel_path(&root, &target);
                 let into = if into.is_empty() { "the project root".to_owned() } else { format!("{into}/") };
+                if ui.small_button("«").on_hover_text("Hide panel").clicked() {
+                    action = Some(TreeAction::HidePanel);
+                }
                 if ui.small_button("📁").on_hover_text(format!("New folder in {into}")).clicked() {
                     action = Some(TreeAction::NewFolder(target.clone()));
                 }
