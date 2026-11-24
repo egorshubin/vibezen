@@ -162,6 +162,23 @@ pub struct Attachment {
     pub block: Value,
     /// images only; documents show as a named chip
     pub thumb: Option<egui::TextureHandle>,
+    /// full-size texture, decoded from `block` the first time the preview opens
+    pub full: Option<egui::TextureHandle>,
+}
+
+impl Attachment {
+    /// Full-size texture of an image attachment (decoded on first use); `None` for documents.
+    pub fn full_texture(&mut self, ctx: &egui::Context) -> Option<egui::TextureHandle> {
+        self.thumb.as_ref()?;
+        if self.full.is_none() {
+            let data = self.block.pointer("/source/data")?.as_str()?;
+            let bytes = base64::engine::general_purpose::STANDARD.decode(data).ok()?;
+            let rgba = image::load_from_memory(&bytes).ok()?.to_rgba8();
+            let ci = egui::ColorImage::from_rgba_unmultiplied([rgba.width() as usize, rgba.height() as usize], rgba.as_raw());
+            self.full = Some(ctx.load_texture(format!("att-full-{}", self.name), ci, egui::TextureOptions::LINEAR));
+        }
+        self.full.clone()
+    }
 }
 
 #[derive(PartialEq, Clone, Copy)]
@@ -251,6 +268,8 @@ pub struct Chat {
     pub items: Vec<Item>,
     pub input: String,
     pub attachments: Vec<Attachment>,
+    /// index into `attachments` of the image shown in the preview modal
+    pub preview: Option<usize>,
     session: Option<Session>,
     pub session_id: Option<String>,
     pub resume_id: Option<String>,
@@ -340,6 +359,7 @@ impl Chat {
             items: vec![],
             input: String::new(),
             attachments: vec![],
+            preview: None,
             session: None,
             session_id: None,
             resume_id: resume,
@@ -956,6 +976,7 @@ pub fn prepare_image(ctx: &egui::Context, name: &str, bytes: Vec<u8>) -> Result<
             "source": {"type": "base64", "media_type": media_type, "data": base64::engine::general_purpose::STANDARD.encode(data)}
         }),
         thumb: Some(tex),
+        full: None,
     })
 }
 

@@ -77,6 +77,83 @@ fn file_chip(ui: &mut Ui, pal: &Palette, name: &str, removable: bool) -> egui::R
     resp
 }
 
+enum ThumbAction {
+    None,
+    Open,
+    Remove,
+}
+
+/// Thumbnail of an image attachment in the composer: click opens the preview, a × in the
+/// top-right corner (shown on hover) removes it.
+fn image_thumb(ui: &mut Ui, tex: &egui::TextureHandle, name: &str) -> ThumbAction {
+    const SIZE: f32 = 56.0;
+    let (rect, resp) = ui.allocate_exact_size(vec2(SIZE, SIZE), Sense::click());
+    let remove_id = resp.id.with("remove");
+    let hovered = ui.rect_contains_pointer(rect);
+    egui::Image::from_texture((tex.id(), rect.size())).corner_radius(6).paint_at(ui, rect);
+    if hovered {
+        ui.painter().rect_stroke(rect, 6.0, Stroke::new(1.0, CLAUDE), egui::StrokeKind::Inside);
+    }
+    let mut action = ThumbAction::None;
+    if resp.on_hover_text(format!("{name}  ·  click to preview")).clicked() {
+        action = ThumbAction::Open;
+    }
+    if hovered {
+        let r = 8.0;
+        let center = rect.right_top() + vec2(-r - 1.0, r + 1.0);
+        let btn_rect = egui::Rect::from_center_size(center, vec2(2.0 * r, 2.0 * r));
+        let btn = ui.interact(btn_rect, remove_id, Sense::click());
+        let fill = if btn.hovered() { Color32::from_rgb(200, 60, 60) } else { Color32::from_black_alpha(170) };
+        ui.painter().circle(center, r, fill, Stroke::new(1.0, Color32::from_white_alpha(120)));
+        ui.painter().text(center, Align2::CENTER_CENTER, "×", FontId::proportional(13.0), Color32::WHITE);
+        if btn.on_hover_text("Remove").clicked() {
+            action = ThumbAction::Remove;
+        }
+    }
+    action
+}
+
+/// Modal showing the attachment selected in `chat.preview` at full size.
+fn attachment_preview(ui: &mut Ui, pal: &Palette, chat: &mut Chat) {
+    let Some(i) = chat.preview else { return };
+    let Some(att) = chat.attachments.get_mut(i) else {
+        chat.preview = None;
+        return;
+    };
+    let name = att.name.clone();
+    let Some(tex) = att.full_texture(ui.ctx()) else {
+        chat.preview = None;
+        return;
+    };
+    let screen = ui.ctx().content_rect();
+    let max = screen.size() - vec2(80.0, 110.0);
+    let size = tex.size_vec2();
+    let scale = (max.x / size.x).min(max.y / size.y).min(1.0).max(0.01);
+    let shown = size * scale;
+    let mut close = false;
+    let r = egui::Modal::new(Id::new(("att_preview", chat.uid)))
+        .frame(Frame::NONE.fill(pal.panel_bg).stroke(Stroke::new(1.0, pal.border)).corner_radius(8).inner_margin(10))
+        .show(ui.ctx(), |ui| {
+            ui.horizontal(|ui| {
+                ui.label(RichText::new(format!("{name}  ·  {} × {} px", size.x as u32, size.y as u32)).color(pal.text_weak).small());
+                ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
+                    if ui.small_button("✕").on_hover_text("Close (Esc)").clicked() {
+                        close = true;
+                    }
+                    if ui.small_button("Remove").clicked() {
+                        close = true;
+                        chat.attachments.remove(i);
+                    }
+                });
+            });
+            ui.add_space(6.0);
+            ui.add(egui::Image::from_texture((tex.id(), shown)).corner_radius(4));
+        });
+    if close || r.should_close() {
+        chat.preview = None;
+    }
+}
+
 /// Commands matching what is typed after the `/`: name prefix first, then anywhere in the name.
 fn command_matches(cmds: &[claude::SlashCommand], q: &str) -> Vec<(String, String)> {
     let q = q.to_lowercase();
@@ -450,20 +527,27 @@ pub fn show(
                         let mut remove = None;
                         ui.horizontal_wrapped(|ui| {
                             for (i, a) in chat.attachments.iter().enumerate() {
-                                let r = match &a.thumb {
-                                    Some(t) => ui.add(egui::Image::from_texture((t.id(), vec2(48.0, 48.0))).corner_radius(6).sense(Sense::click())),
-                                    None => file_chip(ui, pal, &a.name, true),
-                                };
-                                if r.on_hover_text(format!("{}  ·  click to remove", a.name)).clicked() {
-                                    remove = Some(i);
+                                match &a.thumb {
+                                    Some(t) => match image_thumb(ui, t, &a.name) {
+                                        ThumbAction::Open => chat.preview = Some(i),
+                                        ThumbAction::Remove => remove = Some(i),
+                                        ThumbAction::None => {}
+                                    },
+                                    None => {
+                                        if file_chip(ui, pal, &a.name, true).on_hover_text(format!("{}  ·  click to remove", a.name)).clicked() {
+                                            remove = Some(i);
+                                        }
+                                    }
                                 }
                             }
                         });
                         if let Some(i) = remove {
                             chat.attachments.remove(i);
+                            chat.preview = None;
                         }
                         ui.add_space(4.0);
                     }
+                    attachment_preview(ui, pal, chat);
                     let mut layouter = |ui: &Ui, buf: &dyn egui::TextBuffer, wrap: f32| {
                         let mut job = input_job(ui, pal, buf.as_str(), &known);
                         job.wrap.max_width = wrap;

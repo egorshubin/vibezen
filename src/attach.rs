@@ -61,6 +61,7 @@ fn pdf(name: &str, bytes: Vec<u8>) -> Result<Attachment, String> {
             "title": name,
         }),
         thumb: None,
+        full: None,
     })
 }
 
@@ -76,6 +77,7 @@ fn text_attachment(name: &str, text: &str) -> Attachment {
         name: name.to_owned(),
         block: json!({"type": "text", "text": format!("<attached_file name=\"{tag_name}\">\n{body}\n</attached_file>")}),
         thumb: None,
+        full: None,
     }
 }
 
