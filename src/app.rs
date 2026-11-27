@@ -1218,7 +1218,9 @@ impl IdeApp {
             .map(|(c, l)| text_w(ui, l) + chat_pad(c))
             .chain(p.docs.iter().map(|d| text_w(ui, &d.title) + 62.0))
             .collect();
-        fit_tabs(&mut widths, ui.available_width(), 96.0);
+        // room for the "new session" button after the chat tabs
+        const NEW_BTN_W: f32 = 30.0;
+        fit_tabs(&mut widths, ui.available_width() - NEW_BTN_W, 96.0);
         // text cut to what's left of the tab after icon, marks and close button
         let tab_text = |ui: &Ui, s: &str, color: Color32, max_w: f32| {
             let mut job = egui::text::LayoutJob::simple_singleline(s.to_owned(), font.clone(), color);
@@ -1290,6 +1292,17 @@ impl IdeApp {
                                 ui.close();
                             }
                         });
+                    }
+                    // new Claude session, right after the last chat tab
+                    let (rect, resp) = ui.allocate_exact_size(vec2(NEW_BTN_W, 32.0), Sense::click());
+                    let br = egui::Rect::from_center_size(rect.center(), vec2(22.0, 22.0));
+                    if resp.hovered() {
+                        ui.painter().rect_filled(br, 4.0, pal.hover);
+                    }
+                    theme::paint_glyph(ui.painter(), br.center(), "✚", FontId::proportional(13.0), pal.text_weak);
+                    ui.painter().line_segment([rect.right_top(), rect.right_bottom()], Stroke::new(1.0, pal.border.gamma_multiply(0.5)));
+                    if resp.on_hover_text("New Claude Code session").clicked() {
+                        acts.push(Action::NewSession);
                     }
                     for (i, d) in p.docs.iter().enumerate() {
                         let active = p.active_doc == Some(i);
@@ -2745,7 +2758,6 @@ impl eframe::App for IdeApp {
                                 ChatAction::OpenFile(f) => acts.push(Action::OpenFile(f, None)),
                                 ChatAction::SetMode(m) => acts.push(Action::ClaudeMode(m)),
                                 ChatAction::SetModel(m) => acts.push(Action::ClaudeModel(m)),
-                                ChatAction::NewSession => acts.push(Action::NewSession),
                                 ChatAction::OpenSession(id) => acts.push(Action::OpenSession(id)),
                             }
                         }

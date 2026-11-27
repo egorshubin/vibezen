@@ -3,7 +3,7 @@
 //! inline diffs, and a rounded input box holding mode / model / attach / send.
 
 use crate::claude::{self, Chat, Item, MODELS, MODES, PermState};
-use crate::theme::{Palette, hex, tool_btn};
+use crate::theme::{Palette, hex};
 use eframe::egui::{
     self, Align, Align2, Color32, FontId, Frame, Id, Key, Layout, Margin, Modifiers, RichText, Sense, Stroke, Ui, pos2,
     vec2,
@@ -20,8 +20,6 @@ pub enum ChatAction {
     SetMode(String),
     /// new default model for every project (saved in settings)
     SetModel(String),
-    /// start a fresh conversation in its own tab
-    NewSession,
     /// show a stored conversation (in its tab if one is open, else in a new one)
     OpenSession(String),
 }
@@ -364,9 +362,6 @@ pub fn show(
                 let title = chat.title().unwrap_or_else(|| "New conversation".into());
                 ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
                     ui.spacing_mut().item_spacing.x = 1.0;
-                    if tool_btn(ui, pal, "✚", "New session", true) {
-                        out.push(ChatAction::NewSession);
-                    }
                     let hist = ui.menu_button(RichText::new("🕘").size(13.0), |ui| {
                         ui.set_min_width(320.0);
                         let stale = chat.history_at.is_none_or(|t| t.elapsed().as_secs() > 5);
